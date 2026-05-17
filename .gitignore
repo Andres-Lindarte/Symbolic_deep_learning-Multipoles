@@ -12,6 +12,10 @@ venv/
 
 # Outputs
 outputs/
+pysr_results/
+
+# Model
+.pth
 
 # Jupyter
 .ipynb_checkpoints/

@@ -3,22 +3,30 @@ pysr_analysis.py
 ================
 Symbolic regression stage of the GNN → PySR pipeline.
 
+For efield_vector mode the pipeline runs PySR three times in parallel
+(one per component Ex, Ey, Ez) and uses SymPy to verify that all three
+expressions are the same functional form under permutation of the
+coordinate index — which is expected for a Coulomb field.
+
 Workflow
 --------
 1. Load a trained MultipoleGNN checkpoint (.pth).
-2. Rebuild the dataset with the same scaler used during training.
-3. Extract raw edge-MLP outputs (messages) → design matrix (X, y).
-4. Run PySR to discover the analytic expression for the electric potential.
-5. Evaluate, denormalise, and save results.
+2. Rebuild the dataset using the exact scaler from training.
+3. Extract raw edge-MLP messages  →  design matrix (X, [y_Ex, y_Ey, y_Ez]).
+4. Run PySR independently for each component.
+5. Verify with SymPy: simplify, compare against k·q·Δi/r³, cross-check symmetry.
+6. Save all outputs with a datetime stamp.
 
 Usage
 -----
-    python pysr_analysis.py --checkpoint monopole_YYYY-MM-DD_HH-MM-SS_multipole_gnn.pth
+    python pysr_analysis.py --checkpoint <saved_model.pth>
 """
 
 import argparse
+import os
 import numpy as np
 import torch
+from datetime import datetime
 from torch_geometric.loader import DataLoader
 
 from generate_data import MultipoleDataGenerator
@@ -26,298 +34,397 @@ from model import MultipoleGNN
 
 
 # ------------------------------------------------------------------ #
-# 1.  Message extraction                                               #
+# Feature column names (matches node layout [x, y, z, q, r])          #
+# ------------------------------------------------------------------ #
+FEATURE_NAMES = [
+    "src_x", "src_y", "src_z", "src_q", "src_r",
+    "obs_x", "obs_y", "obs_z", "obs_q", "obs_r",
+]
+
+# For efield_vector the GNN outputs 3 channels: Ex, Ey, Ez
+COMPONENT_NAMES = ["Ex", "Ey", "Ez"]
+
+# Known analytic forms in Cartesian coordinates (k=1)
+# E_i = k·q·Δi / r³   where Δi = obs_i - src_i
+_KNOWN_VECTOR_EXPR = {
+    "Ex": "src_q * delta_x / src_r**3",
+    "Ey": "src_q * delta_y / src_r**3",
+    "Ez": "src_q * delta_z / src_r**3",
+}
+
+
+# ------------------------------------------------------------------ #
+# 1.  Checkpoint loading                                               #
+# ------------------------------------------------------------------ #
+
+def load_checkpoint(path: str, device: torch.device) -> tuple:
+    ckpt = torch.load(path, map_location=device)
+
+    if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt:
+        raise ValueError(
+            "Old checkpoint format. Re-train with the updated train.py."
+        )
+
+    mode       = ckpt.get("mode",          "efield_vector")
+    scaler     = ckpt.get("scaler",        {})
+    nf         = ckpt.get("node_features", 5)
+    hd         = ckpt.get("hidden_dim",    32)
+    output_dim = ckpt.get("output_dim",    3)
+
+    model = MultipoleGNN(node_features=nf, hidden_dim=hd, output_dim=output_dim).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+
+    print(f"Checkpoint : {path}")
+    print(f"Mode       : {mode}  |  output_dim={output_dim}")
+    return model, scaler, mode, output_dim
+
+
+# ------------------------------------------------------------------ #
+# 2.  Message extraction                                               #
 # ------------------------------------------------------------------ #
 
 def extract_messages_for_pysr(
-    model: MultipoleGNN,
-    loader: DataLoader,
-    device: torch.device,
-    max_samples: int = 5000,
-) -> tuple[np.ndarray, np.ndarray]:
+    model:       MultipoleGNN,
+    loader:      DataLoader,
+    device:      torch.device,
+    output_dim:  int,
+    max_samples: int = 5_000,
+) -> tuple:
     """
-    Run the trained GNN in inference mode and collect the raw edge-MLP
-    outputs together with their input features.
+    Collect raw edge-MLP outputs and their input features.
+
+    We append the three displacement components (Δx, Δy, Δz) to X
+    because E_i depends on Δi = obs_i - src_i, not on src_i and obs_i
+    separately. Giving PySR Δ directly makes the search faster.
 
     Returns
     -------
-    X : np.ndarray  shape [N, 10]
-        Columns (in order):
-        [src_x, src_y, src_z, src_q, src_r,
-         obs_x, obs_y, obs_z, obs_q, obs_r]
-
-    y : np.ndarray  shape [N]
-        Raw output of the edge_mlp (the "message"), i.e. the network's
-        learned representation of the per-edge potential contribution.
-        This is what PySR will try to express symbolically.
-
-    Notes
-    -----
-    For a monopole, we expect PySR to recover something proportional to
-    src_q / src_r  (Coulomb's law), possibly up to the normalisation
-    constant baked in during training.
+    X : [N, 13]         FEATURE_NAMES + ["delta_x", "delta_y", "delta_z"]
+    y : [N, output_dim] edge-MLP output per component
     """
     model.eval()
-    X_list: list[np.ndarray] = []
-    y_list: list[np.ndarray] = []
+    X_list, y_list = [], []
     collected = 0
 
     with torch.no_grad():
         for batch in loader:
             if collected >= max_samples:
                 break
-
             batch = batch.to(device)
-            msgs  = model.expose_messages(batch.x, batch.edge_index)  # [E, 1]
 
+            msgs    = model.expose_messages(batch.x, batch.edge_index)  # [E, output_dim]
             src_idx = batch.edge_index[0]
             obs_idx = batch.edge_index[1]
 
-            # Build the design matrix row by row: [source_features | obs_features]
-            edge_X = torch.cat(
-                [batch.x[src_idx], batch.x[obs_idx]], dim=1
-            )  # [E, 10]
+            src_feats = batch.x[src_idx]   # [E, 5]
+            obs_feats = batch.x[obs_idx]   # [E, 5]
+
+            # Δ = obs_pos - src_pos  for x, y, z (indices 0,1,2)
+            delta = obs_feats[:, :3] - src_feats[:, :3]  # [E, 3]
+
+            # Full design matrix: [src | obs | Δx | Δy | Δz]
+            edge_X = torch.cat([src_feats, obs_feats, delta], dim=1)  # [E, 13]
 
             X_list.append(edge_X.cpu().numpy())
-            y_list.append(msgs.squeeze(-1).cpu().numpy())
+            y_list.append(msgs.cpu().numpy())
             collected += edge_X.size(0)
 
     X = np.concatenate(X_list, axis=0)[:max_samples]
     y = np.concatenate(y_list, axis=0)[:max_samples]
+
+    print(f"Messages extracted : X={X.shape}, y={y.shape}")
     return X, y
 
 
 # ------------------------------------------------------------------ #
-# 2.  PySR configuration and run                                       #
+# 3.  PySR — one run per component                                     #
 # ------------------------------------------------------------------ #
 
-FEATURE_NAMES = [
-    "src_x", "src_y", "src_z", "src_q", "src_r",
-    "obs_x", "obs_y", "obs_z", "obs_q", "obs_r",
-]
+_FULL_FEATURE_NAMES = FEATURE_NAMES + ["delta_x", "delta_y", "delta_z"]
 
 
-def run_pysr(
-    X: np.ndarray,
-    y: np.ndarray,
-    niterations: int = 50,
-    output_dir: str = "pysr_results",
-) -> "PySRRegressor":  # noqa: F821  (type hint only, avoids hard import at module level)
-    """
-    Run PySR symbolic regression on the extracted message data.
-
-    PySR configuration rationale
-    ----------------------------
-    • binary_operators: +, *, / are the core Coulomb primitives.
-      '-' is included for completeness (dipole/quadrupole extensions).
-    • unary_operators: 'neg' and 'square' cover sign flips and 1/r²
-      scenarios; 'sqrt' helps if the network encodes r from components.
-    • maxsize=15: allows expressions like k*src_q/src_r without being
-      too permissive (avoids overfitting to noise in the messages).
-    • populations=20, niterations=50: good balance for a first run on
-      a physics problem with a known closed form.
-
-    Parameters
-    ----------
-    X            : design matrix [N, 10]
-    y            : target messages [N]
-    niterations  : PySR evolution steps (increase for harder problems)
-    output_dir   : folder where PySR saves Hall-of-Fame CSV and PKL
-
-    Returns
-    -------
-    sr_model : fitted PySRRegressor — inspect with print(sr_model) or
-               sr_model.latex()
-    """
+def run_pysr_component(
+    X:           np.ndarray,
+    y_component: np.ndarray,
+    component:   str,
+    run_id:      str,
+    niterations: int,
+    output_dir:  str,
+):
+    """Run PySR for a single scalar component (Ex, Ey, or Ez)."""
     try:
         from pysr import PySRRegressor
     except ImportError:
-        raise ImportError(
-            "PySR is not installed. Run:  pip install pysr"
-        )
+        raise ImportError("PySR is not installed. Run:  pip install pysr")
+
+    comp_dir = os.path.join(output_dir, f"pysr_{run_id}_{component}")
+    os.makedirs(comp_dir, exist_ok=True)
 
     sr_model = PySRRegressor(
-        # --- Search space ---
-        niterations=niterations,
-        binary_operators=["+", "-", "*", "/"],
-        unary_operators=["neg", "square", "sqrt"],
-        maxsize=15,           # max symbolic complexity
-
-        # --- Population / parallelism ---
-        populations=20,       # independent evolutionary populations
-        population_size=50,
-
-        # --- Output ---
-        output_jax_format=False,
-        output_torch_format=True,   # get a torch-callable expression
-        tempdir=output_dir,
-        verbosity=1,
-
-        # --- Reproducibility ---
-        random_state=42,
-        deterministic=True,
+        niterations      = niterations,
+        binary_operators = ["+", "-", "*", "/"],
+        unary_operators  = ["neg", "square", "sqrt"],
+        maxsize          = 15,
+        populations      = 20,
+        population_size  = 50,
+        output_jax_format   = False,
+        output_torch_format = True,
+        tempdir          = comp_dir,
+        verbosity        = 1,
+        random_state     = 42,
+        deterministic    = False,
     )
 
-    print("\n" + "=" * 60)
-    print("Starting PySR symbolic regression …")
-    print(f"  Samples  : {X.shape[0]}")
-    print(f"  Features : {FEATURE_NAMES}")
-    print(f"  Iters    : {niterations}")
-    print("=" * 60 + "\n")
+    print(f"\n{'='*60}")
+    print(f"PySR — component {component}  ({niterations} iterations)")
+    print(f"Output dir : {comp_dir}")
+    print(f"{'='*60}\n")
 
-    sr_model.fit(X, y, variable_names=FEATURE_NAMES)
+    sr_model.fit(X, y_component, variable_names=_FULL_FEATURE_NAMES)
     return sr_model
 
 
+def run_pysr_all_components(
+    X:           np.ndarray,
+    y:           np.ndarray,
+    output_dim:  int,
+    run_id:      str,
+    niterations: int,
+    output_dir:  str,
+) -> tuple:
+    """
+    Run PySR once per output component.
+
+    Scalar mode (output_dim=1) → 1 run.
+    Vector mode (output_dim=3) → 3 runs: Ex, Ey, Ez.
+    """
+    components = COMPONENT_NAMES[:output_dim] if output_dim == 3 else ["scalar"]
+    models = []
+
+    for i, comp in enumerate(components):
+        y_comp = y[:, i] if output_dim > 1 else y.squeeze()
+        sr = run_pysr_component(X, y_comp, comp, run_id, niterations, output_dir)
+        models.append(sr)
+
+    return models, components
+
+
 # ------------------------------------------------------------------ #
-# 3.  Evaluation and denormalisation                                   #
+# 4.  SymPy verification                                               #
 # ------------------------------------------------------------------ #
 
-def evaluate_symbolic_model(
-    sr_model,
-    X: np.ndarray,
-    y_norm: np.ndarray,
-    scaler: dict,
+def verify_with_sympy(
+    sr_models:  list,
+    components: list,
+    mode:       str,
+    scaler:     dict,
+    X:          np.ndarray,
+    y:          np.ndarray,
+    run_id:     str,
+    output_dir: str,
 ) -> None:
     """
-    Compare the PySR expressions against the true (denormalised) potential.
+    For each component:
+      1. Simplify the PySR expression with SymPy.
+      2. Compare against the known analytic form k·q·Δi/r³.
+      3. Compute ratio found/known → should be the learned constant k.
 
-    The GNN was trained on normalised targets:
-        V_norm = (V - V_mean) / V_std
-
-    After PySR fits the messages (which live in normalised space) we
-    denormalise to recover V in physical units and compute R².
-
-    Parameters
-    ----------
-    sr_model : fitted PySRRegressor
-    X        : design matrix used for fitting
-    y_norm   : normalised messages (raw GNN output)
-    scaler   : {'V_mean': float, 'V_std': float}
+    Then cross-check symmetry: verify that Ex, Ey, Ez are the same
+    functional form under permutation delta_x→delta_i, revealing whether
+    the GNN learned one universal law or three separate ones.
     """
-    V_mean = scaler["V_mean"]
-    V_std  = scaler["V_std"]
+    try:
+        import sympy as sp
+    except ImportError:
+        print("SymPy not installed. Run:  pip install sympy")
+        return
 
     print("\n" + "=" * 60)
-    print("PySR Hall of Fame (normalised message space)")
+    print("SymPy Verification")
     print("=" * 60)
-    print(sr_model)
 
-    # Best expression
-    best_expr = sr_model.sympy()
-    print(f"\nBest symbolic expression (normalised): {best_expr}")
+    summary_lines = [f"Run ID : {run_id}", f"Mode   : {mode}", ""]
 
-    # Predict with the best expression
-    y_pred_norm = sr_model.predict(X)
+    simplified_exprs = []
+    delta_syms       = []
+    r2_scores        = []
 
-    # Denormalise both prediction and target to physical V
-    y_pred_phys = y_pred_norm * V_std + V_mean
-    y_true_phys = y_norm     * V_std + V_mean
+    dx, dy, dz = sp.symbols("delta_x delta_y delta_z", real=True)
+    delta_map  = {"Ex": dx, "Ey": dy, "Ez": dz}
 
-    # R² in physical space
-    ss_res = np.sum((y_true_phys - y_pred_phys) ** 2)
-    ss_tot = np.sum((y_true_phys - y_true_phys.mean()) ** 2)
-    r2 = 1.0 - ss_res / ss_tot
+    for i, (sr_model, comp) in enumerate(zip(sr_models, components)):
+        print(f"\n--- Component {comp} ---")
 
-    rmse = np.sqrt(np.mean((y_true_phys - y_pred_phys) ** 2))
+        # Get scaler for this component
+        if mode == "efield_vector":
+            col      = f"target_{comp}"
+            mean_val = scaler.get(col, {}).get("mean", 0.0)
+            std_val  = scaler.get(col, {}).get("std",  1.0)
+        else:
+            col      = list(scaler.keys())[0]
+            mean_val = scaler[col]["mean"]
+            std_val  = scaler[col]["std"]
 
-    print(f"\nEvaluation in physical units (V = k·q/r)")
-    print(f"  R²   : {r2:.6f}")
-    print(f"  RMSE : {rmse:.6f}")
+        # SymPy simplification
+        try:
+            best_pysr  = sr_model.sympy()
+            simplified = sp.simplify(best_pysr)
+        except Exception as e:
+            print(f"  Could not parse PySR expression: {e}")
+            simplified_exprs.append(None)
+            delta_syms.append(None)
+            continue
 
-    # Latex form for the paper/notebook
-    try:
-        latex_expr = sr_model.latex()
-        print(f"\nLaTeX expression:\n  {latex_expr}")
-    except Exception:
-        pass
+        latex_expr = sp.latex(simplified)
+        print(f"  PySR (raw)   : {best_pysr}")
+        print(f"  Simplified   : {simplified}")
+        print(f"  LaTeX        : {latex_expr}")
+
+        # Compare with known form
+        if mode == "efield_vector" and comp in _KNOWN_VECTOR_EXPR:
+            known_expr = sp.sympify(_KNOWN_VECTOR_EXPR[comp])
+            print(f"  Known form   : {known_expr}")
+
+            try:
+                ratio = sp.simplify(simplified / known_expr)
+                print(f"  Ratio (found/known) = {ratio}")
+                print(f"  → Constant ratio = correct form (learned k ≈ {ratio})")
+            except Exception as e:
+                ratio = f"N/A ({e})"
+
+            summary_lines += [
+                f"[{comp}]",
+                f"  PySR      : {best_pysr}",
+                f"  Simplified: {simplified}",
+                f"  LaTeX     : {latex_expr}",
+                f"  Known     : {known_expr}",
+                f"  Ratio     : {ratio}",
+            ]
+        else:
+            summary_lines += [
+                f"[{comp}]",
+                f"  PySR      : {best_pysr}",
+                f"  Simplified: {simplified}",
+                f"  LaTeX     : {latex_expr}",
+            ]
+
+        simplified_exprs.append(simplified)
+        delta_syms.append(delta_map.get(comp))
+
+        # R² in physical units
+        y_comp      = y[:, i] if y.ndim > 1 else y
+        y_pred_norm = sr_model.predict(X)
+        y_pred_phys = y_pred_norm * std_val + mean_val
+        y_true_phys = y_comp     * std_val + mean_val
+
+        ss_res = float(np.sum((y_true_phys - y_pred_phys) ** 2))
+        ss_tot = float(np.sum((y_true_phys - y_true_phys.mean()) ** 2))
+        r2   = 1.0 - ss_res / ss_tot
+        rmse = float(np.sqrt(np.mean((y_true_phys - y_pred_phys) ** 2)))
+        r2_scores.append(r2)
+
+        print(f"  R²   : {r2:.6f}")
+        print(f"  RMSE : {rmse:.6f}")
+        summary_lines += [f"  R²   : {r2:.6f}", f"  RMSE : {rmse:.6f}", ""]
+
+    # --- Cross-component symmetry check (vector mode only) ---
+    if (mode == "efield_vector"
+            and len(simplified_exprs) == 3
+            and all(e is not None for e in simplified_exprs)):
+
+        print("\n--- Symmetry cross-check (Ex, Ey, Ez same law?) ---")
+        di = sp.Symbol("delta_i", real=True)
+
+        canonical = []
+        for expr, d_sym in zip(simplified_exprs, [dx, dy, dz]):
+            # Replace the component-specific delta with the generic delta_i
+            canonical.append(sp.simplify(expr.subs(d_sym, di)))
+
+        print(f"  Ex(delta_x→δi) : {canonical[0]}")
+        print(f"  Ey(delta_y→δi) : {canonical[1]}")
+        print(f"  Ez(delta_z→δi) : {canonical[2]}")
+
+        eq_xy = sp.simplify(canonical[0] - canonical[1]) == 0
+        eq_xz = sp.simplify(canonical[0] - canonical[2]) == 0
+
+        if eq_xy and eq_xz:
+            status = "✓ SYMMETRIC — GNN learned one universal law:  E_i = f(q, r, Δi)"
+        else:
+            status = "✗ NOT symmetric — components differ (try more epochs or iterations)"
+
+        print(f"\n  {status}")
+        summary_lines += ["", "[Symmetry check]", f"  {status}"]
+        if eq_xy and eq_xz:
+            summary_lines.append(f"  Canonical form: {canonical[0]}")
+
+    if r2_scores:
+        print(f"\n  Mean R² across components: {np.mean(r2_scores):.6f}")
+
+    # --- Save summary ---
+    summary_path = os.path.join(output_dir, f"sympy_summary_{run_id}.txt")
+    with open(summary_path, "w") as f:
+        f.write("\n".join(summary_lines))
+    print(f"\nSymPy summary saved → {summary_path}")
 
 
 # ------------------------------------------------------------------ #
-# 4.  CLI entry point                                                  #
+# 5.  CLI                                                              #
 # ------------------------------------------------------------------ #
-
-def load_checkpoint(path: str, device: torch.device):
-    """Load model weights and scaler from a checkpoint saved by train.py."""
-    checkpoint = torch.load(path, map_location=device)
-
-    # Support both old format (state_dict only) and new format (dict with scaler)
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        state_dict = checkpoint["model_state_dict"]
-        scaler     = checkpoint["scaler"]
-    else:
-        state_dict = checkpoint
-        scaler     = None
-        print(
-            "Warning: checkpoint does not contain a scaler. "
-            "Denormalisation will be skipped (V_mean=0, V_std=1)."
-        )
-        scaler = {"V_mean": 0.0, "V_std": 1.0}
-
-    model = MultipoleGNN(node_features=5, hidden_dim=32).to(device)
-    model.load_state_dict(state_dict)
-    model.eval()
-    return model, scaler
-
 
 def main():
-    parser = argparse.ArgumentParser(description="GNN → PySR symbolic regression")
-    parser.add_argument(
-        "--checkpoint", required=True,
-        help="Path to the .pth file saved by train.py",
-    )
-    parser.add_argument(
-        "--num_samples", type=int, default=10_000,
-        help="Samples to regenerate for message extraction (default: 10 000)",
-    )
-    parser.add_argument(
-        "--max_messages", type=int, default=5_000,
-        help="Max edges fed to PySR (default: 5 000)",
-    )
-    parser.add_argument(
-        "--niterations", type=int, default=50,
-        help="PySR evolutionary iterations (default: 50)",
-    )
-    parser.add_argument(
-        "--batch_size", type=int, default=256,
-        help="DataLoader batch size for message extraction (default: 256)",
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default="pysr_results",
-        help="Directory for PySR Hall-of-Fame outputs (default: pysr_results)",
-    )
+    parser = argparse.ArgumentParser(description="GNN → PySR (vector) → SymPy pipeline")
+    parser.add_argument("--checkpoint",   required=True)
+    parser.add_argument("--num_samples",  type=int, default=10_000)
+    parser.add_argument("--max_messages", type=int, default=5_000)
+    parser.add_argument("--niterations",  type=int, default=50)
+    parser.add_argument("--batch_size",   type=int, default=256)
+    parser.add_argument("--output_dir",   type=str, default="pysr_results")
     args = parser.parse_args()
 
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    os.makedirs(args.output_dir, exist_ok=True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    print(f"Device  : {device}")
+    print(f"Run ID  : {run_id}")
 
     # --- Load model ---
-    print(f"Loading checkpoint: {args.checkpoint}")
-    model, scaler = load_checkpoint(args.checkpoint, device)
+    model, scaler, mode, output_dim = load_checkpoint(args.checkpoint, device)
 
-    # --- Rebuild dataset (same distribution as training) ---
-    # We regenerate data so this script is self-contained;
-    # alternatively you could serialise the dataset to disk in train.py.
-    print(f"Regenerating {args.num_samples} monopole samples …")
+    # --- Rebuild dataset ---
+    print(f"\nGenerating {args.num_samples} samples (mode={mode}) …")
     generator = MultipoleDataGenerator(num_samples=args.num_samples, space_size=5.0)
-    df        = generator.generate_monopole()
-    dataset, _  = generator.df_to_pytorch_geometric(df, scaler=scaler)
-    loader    = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
+
+    if mode == "potential":
+        df         = generator.generate_monopole()
+        target_col = "target_V"
+    else:
+        df         = generator.generate_monopole_efield()
+        target_col = ["target_Ex", "target_Ey", "target_Ez"] if output_dim == 3 else "target_E_mag"
+
+    dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
+    loader     = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
     # --- Extract messages ---
-    print("Extracting edge-MLP messages …")
-    X, y = extract_messages_for_pysr(
-        model, loader, device, max_samples=args.max_messages
+    X, y = extract_messages_for_pysr(model, loader, device, output_dim, max_samples=args.max_messages)
+
+    # --- PySR (one run per component) ---
+    sr_models, components = run_pysr_all_components(
+        X, y, output_dim, run_id,
+        niterations=args.niterations,
+        output_dir=args.output_dir,
     )
-    print(f"Design matrix: X={X.shape}, y={y.shape}")
 
-    # --- Run PySR ---
-    sr_model = run_pysr(X, y, niterations=args.niterations, output_dir=args.output_dir)
+    for sr, comp in zip(sr_models, components):
+        print(f"\n{'='*60}")
+        print(f"Hall of Fame — {comp}")
+        print(sr)
 
-    # --- Evaluate ---
-    evaluate_symbolic_model(sr_model, X, y, scaler)
+    # --- SymPy ---
+    verify_with_sympy(sr_models, components, mode, scaler, X, y, run_id, args.output_dir)
 
-    print(f"\nDone. Full Hall-of-Fame saved to '{args.output_dir}/'")
+    print(f"\nAll outputs saved under '{args.output_dir}/'")
 
 
 if __name__ == "__main__":

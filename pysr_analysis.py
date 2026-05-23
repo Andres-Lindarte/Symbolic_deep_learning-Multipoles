@@ -19,7 +19,7 @@ Workflow
 
 Usage
 -----
-    python pysr_analysis.py --checkpoint <saved_model.pth>
+    python pysr_analysis.py --checkpoint <outputs/checkpoints/saved .pth file>
 """
 
 import argparse
@@ -148,9 +148,8 @@ def run_pysr_component(
     X:           np.ndarray,
     y_component: np.ndarray,
     component:   str,
-    run_id:      str,
     niterations: int,
-    output_dir:  str,
+    run_dir:  str,
 ):
     """Run PySR for a single scalar component (Ex, Ey, or Ez)."""
     try:
@@ -158,7 +157,7 @@ def run_pysr_component(
     except ImportError:
         raise ImportError("PySR is not installed. Run:  pip install pysr")
 
-    comp_dir = os.path.join(output_dir, f"pysr_{run_id}_{component}")
+    comp_dir = os.path.join(run_dir, component)
     os.makedirs(comp_dir, exist_ok=True)
 
     sr_model = PySRRegressor(
@@ -170,7 +169,8 @@ def run_pysr_component(
         population_size  = 50,
         output_jax_format   = False,
         output_torch_format = True,
-        tempdir          = comp_dir,
+        tempdir          = comp_dir,    # Julia temp files
+        temp_equation_file    = os.path.join(comp_dir, "hall_of_fame.csv"),  # Save PySR hall of fame here
         verbosity        = 1,
         random_state     = 42,
         deterministic    = False,
@@ -189,9 +189,8 @@ def run_pysr_all_components(
     X:           np.ndarray,
     y:           np.ndarray,
     output_dim:  int,
-    run_id:      str,
     niterations: int,
-    output_dir:  str,
+    run_dir:      str,
 ) -> tuple:
     """
     Run PySR once per output component.
@@ -204,7 +203,7 @@ def run_pysr_all_components(
 
     for i, comp in enumerate(components):
         y_comp = y[:, i] if output_dim > 1 else y.squeeze()
-        sr = run_pysr_component(X, y_comp, comp, run_id, niterations, output_dir)
+        sr = run_pysr_component(X, y_comp, comp, niterations, run_dir)
         models.append(sr)
 
     return models, components
@@ -221,8 +220,7 @@ def verify_with_sympy(
     scaler:     dict,
     X:          np.ndarray,
     y:          np.ndarray,
-    run_id:     str,
-    output_dir: str,
+    run_dir:     str,
 ) -> None:
     """
     For each component:
@@ -244,7 +242,7 @@ def verify_with_sympy(
     print("SymPy Verification")
     print("=" * 60)
 
-    summary_lines = [f"Run ID : {run_id}", f"Mode   : {mode}", ""]
+    summary_lines = [f"Run ID : {run_dir}", f"Mode   : {mode}", ""]
 
     simplified_exprs = []
     delta_syms       = []
@@ -349,9 +347,9 @@ def verify_with_sympy(
         eq_xz = sp.simplify(canonical[0] - canonical[2]) == 0
 
         if eq_xy and eq_xz:
-            status = "✓ SYMMETRIC — GNN learned one universal law:  E_i = f(q, r, Δi)"
+            status = "SYMMETRIC — GNN learned one universal law:  E_i = f(q, r, Δi)"
         else:
-            status = "✗ NOT symmetric — components differ (try more epochs or iterations)"
+            status = "NOT symmetric — components differ (try more epochs or iterations)"
 
         print(f"\n  {status}")
         summary_lines += ["", "[Symmetry check]", f"  {status}"]
@@ -362,7 +360,7 @@ def verify_with_sympy(
         print(f"\n  Mean R² across components: {np.mean(r2_scores):.6f}")
 
     # --- Save summary ---
-    summary_path = os.path.join(output_dir, f"sympy_summary_{run_id}.txt")
+    summary_path = os.path.join(run_dir, "sympy_summary.txt")
     with open(summary_path, "w") as f:
         f.write("\n".join(summary_lines))
     print(f"\nSymPy summary saved → {summary_path}")
@@ -379,11 +377,12 @@ def main():
     parser.add_argument("--max_messages", type=int, default=5_000)
     parser.add_argument("--niterations",  type=int, default=50)
     parser.add_argument("--batch_size",   type=int, default=256)
-    parser.add_argument("--output_dir",   type=str, default="pysr_results")
+    parser.add_argument("--base_dir",   type=str, default="outputs/runs")
     args = parser.parse_args()
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    os.makedirs(args.output_dir, exist_ok=True)
+    run_dir = os.path.join(args.base_dir, run_id)
+    os.makedirs(run_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device  : {device}")
@@ -411,9 +410,9 @@ def main():
 
     # --- PySR (one run per component) ---
     sr_models, components = run_pysr_all_components(
-        X, y, output_dim, run_id,
+        X, y, output_dim,
         niterations=args.niterations,
-        output_dir=args.output_dir,
+        run_dir=run_dir,
     )
 
     for sr, comp in zip(sr_models, components):
@@ -422,9 +421,9 @@ def main():
         print(sr)
 
     # --- SymPy ---
-    verify_with_sympy(sr_models, components, mode, scaler, X, y, run_id, args.output_dir)
+    verify_with_sympy(sr_models, components, mode, scaler, X, y, run_dir)
 
-    print(f"\nAll outputs saved under '{args.output_dir}/'")
+    print(f"\nAll outputs saved under '{run_dir}/'")
 
 
 if __name__ == "__main__":

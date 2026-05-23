@@ -4,6 +4,7 @@ Usage
      Python train.py --mode <potential|efield_mag|efield_vector>
 """
 
+import os
 import argparse
 import torch
 import torch.nn as nn
@@ -19,10 +20,10 @@ def train_model(MODE: str = 'efield_vector'):
     # ------------------------------------------------------------------ #
     # 1. Hyperparameters                                                   #
     # ------------------------------------------------------------------ #
-    EPOCHS        = 200
+    EPOCHS        = 200 
     BATCH_SIZE    = 32
     LEARNING_RATE = 1e-3
-    NUM_SAMPLES   = 10_000
+    NUM_SAMPLES   = 10_000 
     SPACE_SIZE    = 10.0
     TRAIN_RATIO   = 0.8
 
@@ -78,7 +79,6 @@ def train_model(MODE: str = 'efield_vector'):
     # ------------------------------------------------------------------ #
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model  = MultipoleGNN(node_features=5, hidden_dim=32, output_dim=OUTPUT_DIM).to(device)
-
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.MSELoss()
 
@@ -153,7 +153,8 @@ def train_model(MODE: str = 'efield_vector'):
     model.load_state_dict(best_state)
 
     run_id    = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    save_path = f"{MODE}_monopole_{run_id}.pth"
+    os.makedirs("outputs/checkpoints", exist_ok=True)
+    save_path = f"outputs/checkpoints/{MODE}_monopole_{run_id}.pth"
 
     torch.save(
         {
@@ -186,4 +187,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     trained_model, dataloader, scaler, mode = train_model(args.mode)
-    print(f"\nNext step: python pysr_analysis.py --checkpoint <saved .pth file>")
+    print(f"\nNext step: python pysr_analysis.py --checkpoint <outputs/checkpoints/saved .pth file>")

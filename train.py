@@ -1,7 +1,7 @@
 """
 Usage 
 -----
-     Python train.py --mode <potential|efield_mag|efield_vector>
+     Python train.py --mode <potential|efield_vector|dipole_potential|dipole_efield>
 """
 
 import os
@@ -23,19 +23,23 @@ def train_model(MODE: str = 'efield_vector'):
     EPOCHS        = 200 
     BATCH_SIZE    = 32
     LEARNING_RATE = 1e-3
+    HIDDEN_DIM    = 32
     NUM_SAMPLES   = 10_000 
     SPACE_SIZE    = 10.0
     TRAIN_RATIO   = 0.8
 
     # MODE controls what the GNN learns:
-    #   'potential'    → V = k·q/r          scalar, output_dim=1
-    #   'efield_mag'   → |E| = k·q/r²       scalar, output_dim=1
-    #   'efield_vector'→ E = (Ex, Ey, Ez)   vector, output_dim=3
+    #   'potential'    → V = k·q/r          scalar, output_dim=1,   2 nodes (q and observer)
+    #   'efield_mag'   → |E| = k·q/r²       scalar, output_dim=1,   2 nodes (q and observer)
+    #   'efield_vector'→ E = (Ex, Ey, Ez)   vector, output_dim=3,   2 nodes (q and observer)
+    #   'dipole_potential' → V = k·p·r/r³   scalar, output_dim=1,   3 nodes (q, -q, observer)
+    #   'dipole_efield'   → E = k·p/r³      vector, output_dim=3,   3 nodes (q, -q, observer)
 
     MODE_CONFIG = {
-        'potential':     {'target_col': 'target_V',                              'output_dim': 1},
-        'efield_mag':    {'target_col': 'target_E_mag',                          'output_dim': 1},
-        'efield_vector': {'target_col': ['target_Ex', 'target_Ey', 'target_Ez'], 'output_dim': 3},
+        'potential':        {'target_col': 'target_V',                              'output_dim': 1, 'nodes_per_graph': 2},
+        'efield_vector':    {'target_col': ['target_Ex', 'target_Ey', 'target_Ez'], 'output_dim': 3, 'nodes_per_graph': 2},
+        'dipole_potential': {'target_col': 'target_V',                              'output_dim': 1, 'nodes_per_graph': 3},
+        'dipole_efield':    {'target_col': ['target_Ex', 'target_Ey', 'target_Ez'], 'output_dim': 3, 'nodes_per_graph': 3},
     }
 
     if MODE not in MODE_CONFIG:
@@ -43,6 +47,7 @@ def train_model(MODE: str = 'efield_vector'):
 
     TARGET_COL = MODE_CONFIG[MODE]['target_col']
     OUTPUT_DIM = MODE_CONFIG[MODE]['output_dim']
+    NODES_PER_GRAPH = MODE_CONFIG[MODE]['nodes_per_graph']
 
     # ------------------------------------------------------------------ #
     # 2. Data generation                                                   #
@@ -50,12 +55,17 @@ def train_model(MODE: str = 'efield_vector'):
     generator = MultipoleDataGenerator(num_samples=NUM_SAMPLES, space_size=SPACE_SIZE)
 
     if MODE == 'potential':
-        df = generator.generate_monopole()
-    else:
-        df = generator.generate_monopole_efield()   # has Ex, Ey, Ez and E_mag
+        df = generator.generate_monopole()          # has target_V = k·q/r
+    elif MODE == 'efield_vector':
+        df = generator.generate_monopole_efield()   # has target Ex, Ey, Ez 
+    elif MODE == 'dipole_potential':
+        df = generator.generate_dipole()            # has target_V = k·p·r/r³
+    elif MODE == 'dipole_efield':
+        df = generator.generate_dipole_efield()     # has target Ex, Ey, Ez 
 
     print(f"[{MODE}] Dataset generated: {len(df)} samples.")
-
+    
+    # Train/val split
     split    = int(TRAIN_RATIO * len(df))
     df_train = df.iloc[:split].reset_index(drop=True)
     df_val   = df.iloc[split:].reset_index(drop=True)
@@ -78,7 +88,7 @@ def train_model(MODE: str = 'efield_vector'):
     # 3. Model, optimiser, loss                                            #
     # ------------------------------------------------------------------ #
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model  = MultipoleGNN(node_features=5, hidden_dim=32, output_dim=OUTPUT_DIM).to(device)
+    model  = MultipoleGNN(node_features=5, hidden_dim=HIDDEN_DIM, output_dim=OUTPUT_DIM).to(device)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.MSELoss()
 
@@ -103,8 +113,11 @@ def train_model(MODE: str = 'efield_vector'):
 
             out = model(batch.x, batch.edge_index)   # [num_nodes_in_batch, OUTPUT_DIM]
 
-            # Observer nodes are at odd positions in the flat node list
-            obs_mask = torch.arange(out.size(0), device=device) % 2 == 1
+            # Observer is always the last node in each graph.
+            # Monopole: node 1 of 2  →  % 2 == 1
+            # Dipole:   node 2 of 3  →  % 3 == 2
+            # General:  % NODES_PER_GRAPH == NODES_PER_GRAPH - 1
+            obs_mask = torch.arange(out.size(0), device=device) % NODES_PER_GRAPH == NODES_PER_GRAPH - 1
             pred     = out[obs_mask]                 # [num_graphs, OUTPUT_DIM]
             target   = batch.y.view(-1, OUTPUT_DIM)  # [num_graphs, OUTPUT_DIM]
 
@@ -127,7 +140,7 @@ def train_model(MODE: str = 'efield_vector'):
             for batch in val_loader:
                 batch    = batch.to(device)
                 out      = model(batch.x, batch.edge_index)
-                obs_mask = torch.arange(out.size(0), device=device) % 2 == 1
+                obs_mask = torch.arange(out.size(0), device=device) % NODES_PER_GRAPH == NODES_PER_GRAPH - 1
                 pred     = out[obs_mask]
                 target   = batch.y.view(-1, OUTPUT_DIM)
                 loss     = criterion(pred, target)
@@ -163,8 +176,9 @@ def train_model(MODE: str = 'efield_vector'):
             'mode':             MODE,
             'target_col':       TARGET_COL,
             'node_features':    5,
-            'hidden_dim':       32,
+            'hidden_dim':       HIDDEN_DIM,
             'output_dim':       OUTPUT_DIM,
+            'nodes_per_graph':  NODES_PER_GRAPH
         },
         save_path,
     )

@@ -52,7 +52,6 @@ _KNOWN_VECTOR_EXPR = {
     "Ez": "src_q * delta_z / src_r**3",
 }
 
-
 # ------------------------------------------------------------------ #
 # 1.  Checkpoint loading                                               #
 # ------------------------------------------------------------------ #
@@ -70,14 +69,15 @@ def load_checkpoint(path: str, device: torch.device) -> tuple:
     nf         = ckpt.get("node_features", 5)
     hd         = ckpt.get("hidden_dim",    32)
     output_dim = ckpt.get("output_dim",    3)
+    nodes_per_graph = ckpt.get("nodes_per_graph", 2) # 2 for monopole, 3 for dipole.
 
     model = MultipoleGNN(node_features=nf, hidden_dim=hd, output_dim=output_dim).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
     print(f"Checkpoint : {path}")
-    print(f"Mode       : {mode}  |  output_dim={output_dim}")
-    return model, scaler, mode, output_dim
+    print(f"Mode       : {mode}  |  output_dim={output_dim}  |  nodes_per_graph={nodes_per_graph}")
+    return model, scaler, mode, output_dim, nodes_per_graph
 
 
 # ------------------------------------------------------------------ #
@@ -163,7 +163,7 @@ def run_pysr_component(
     sr_model = PySRRegressor(
         niterations      = niterations,
         binary_operators = ["+", "-", "*", "/"],
-        unary_operators  = ["neg", "square", "sqrt"],
+        unary_operators  = ["neg", "square", "cube", "sqrt"],
         maxsize          = 15,
         populations      = 20,
         population_size  = 50,
@@ -255,7 +255,9 @@ def verify_with_sympy(
         print(f"\n--- Component {comp} ---")
 
         # Get scaler for this component
-        if mode == "efield_vector":
+        # Both efield_vector and dipole_vector use per-component scalers
+        # keyed as 'target_Ex', 'target_Ey', 'target_Ez'
+        if mode in ("efield_vector", "dipole_vector"):
             col      = f"target_{comp}"
             mean_val = scaler.get(col, {}).get("mean", 0.0)
             std_val  = scaler.get(col, {}).get("std",  1.0)
@@ -280,10 +282,12 @@ def verify_with_sympy(
         print(f"  LaTeX        : {latex_expr}")
 
         # Compare with known form
-        if mode == "efield_vector" and comp in _KNOWN_VECTOR_EXPR:
+        # For both monopole and dipole, the per-edge message learned by the
+        # GNN should be k·q·Δi/r³ — the dipole field emerges from aggr='add'
+        if mode in ("efield_vector", "dipole_vector") and comp in _KNOWN_VECTOR_EXPR:
             known_expr = sp.sympify(_KNOWN_VECTOR_EXPR[comp])
             print(f"  Known form   : {known_expr}")
-
+ 
             try:
                 ratio = sp.simplify(simplified / known_expr)
                 print(f"  Ratio (found/known) = {ratio}")
@@ -389,7 +393,7 @@ def main():
     print(f"Run ID  : {run_id}")
 
     # --- Load model ---
-    model, scaler, mode, output_dim = load_checkpoint(args.checkpoint, device)
+    model, scaler, mode, output_dim, nodes_per_graph = load_checkpoint(args.checkpoint, device)
 
     # --- Rebuild dataset ---
     print(f"\nGenerating {args.num_samples} samples (mode={mode}) …")
@@ -398,11 +402,26 @@ def main():
     if mode == "potential":
         df         = generator.generate_monopole()
         target_col = "target_V"
-    else:
-        df         = generator.generate_monopole_efield()
-        target_col = ["target_Ex", "target_Ey", "target_Ez"] if output_dim == 3 else "target_E_mag"
+        dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
 
-    dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
+    elif mode == "efield_vector":
+        df         = generator.generate_monopole_efield()
+        target_col = ["target_Ex", "target_Ey", "target_Ez"]
+        dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
+
+    elif mode == "dipole_potential":
+        df         = generator.generate_dipole_potential()
+        target_col = "target_V"
+        dataset, _ = generator.dipole_df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
+
+    elif mode == "dipole_vector":
+        df         = generator.generate_dipole()
+        target_col = ["target_Ex", "target_Ey", "target_Ez"]
+        dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
+
+    else:
+        raise ValueError(f"Unknown mode: {mode} in checkpoint. Expected 'potential', 'efield_vector','dipole_potential' or 'dipole_vector'.")
+
     loader     = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
     # --- Extract messages ---

@@ -163,7 +163,7 @@ def run_pysr_component(
     sr_model = PySRRegressor(
         niterations      = niterations,
         binary_operators = ["+", "-", "*", "/"],
-        unary_operators  = ["neg", "square", "cube", "sqrt"],
+        unary_operators  = ["neg",  "cube", "square", "sqrt"],
         maxsize          = 15,
         populations      = 20,
         population_size  = 50,

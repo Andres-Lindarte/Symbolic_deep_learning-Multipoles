@@ -4,6 +4,7 @@ Usage
      Python train.py --mode <potential|efield_vector|dipole_potential|dipole_efield>
 """
 
+import matplotlib.pyplot as plt
 import os
 import argparse
 import torch
@@ -15,6 +16,31 @@ from datetime import datetime
 from generate_data import MultipoleDataGenerator
 from model import MultipoleGNN
 
+def plot_loss_curves(train_losses, val_losses, mode, run_id, save_dir="outputs/plots"):
+    """
+    Plot and save the loss curves for training and validation.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(train_losses, label='Train Loss', color='#1f77b4', linewidth=2)
+    plt.plot(val_losses, label='Validation Loss', color='#ff7f0e', linewidth=2)
+    
+    plt.title(f'GNN Training Dynamics - Mode: {mode}', fontsize=14)
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss (MSE)', fontsize=12)
+    
+    # Usar escala logarítmica suele ser muy útil en física si el error cae drásticamente
+    plt.yscale('log') 
+    
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend(fontsize=12)
+    
+    save_path = os.path.join(save_dir, f"loss_curve_{mode}_{run_id}.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Loss curve saved on → {save_path}")
 
 def train_model(MODE: str = 'efield_vector'):
     # ------------------------------------------------------------------ #
@@ -101,6 +127,8 @@ def train_model(MODE: str = 'efield_vector'):
     # ------------------------------------------------------------------ #
     best_val_loss = float('inf')
     best_state    = None
+    history_train_loss = []
+    history_val_loss = []
 
     for epoch in range(EPOCHS):
         # --- Train ---
@@ -129,6 +157,7 @@ def train_model(MODE: str = 'efield_vector'):
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item() * batch.num_graphs
+            history_train_loss.append(loss.item())
 
         avg_train_loss = total_train_loss / len(train_dataset)
 
@@ -145,6 +174,7 @@ def train_model(MODE: str = 'efield_vector'):
                 target   = batch.y.view(-1, OUTPUT_DIM)
                 loss     = criterion(pred, target)
                 total_val_loss += loss.item() * batch.num_graphs
+                history_val_loss.append(loss.item())
 
         avg_val_loss = total_val_loss / len(val_dataset)
 
@@ -185,6 +215,8 @@ def train_model(MODE: str = 'efield_vector'):
 
     print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
     print(f"Checkpoint saved → {save_path}")
+
+    plot_loss_curves(history_train_loss, history_val_loss, MODE, run_id)
 
     return model, train_loader, scaler, MODE
 

@@ -340,14 +340,28 @@ class MultipoleDataGenerator:
                     f"Available: {[c for c in df.columns if c.startswith('target_')]}"
                 )
 
-        # --- Per-column scaler ---
+        # --- Per-column or Isotropic scaler (one scaler on the whole space) ---
         if scaler is None:
             scaler = {}
-            for col in cols:
-                mean = float(df[col].mean())
-                std  = float(df[col].std())
-                std  = std if std > 1e-8 else 1.0
-                scaler[col] = {'mean': mean, 'std': std}
+
+            # Check if the vector has 3 components named target_Ex, target_Ey, target_Ez
+            is_vector_3d = len(cols) == 3 
+
+            if is_vector_3d:
+            # Isotropic scaler: compute mean/std of the vector magnitude across the dataset
+                all_values = df[cols].values
+                global_mean = float(np.linalg.norm(all_values, axis=1).mean())
+                global_std  = float(np.linalg.norm(all_values, axis=1).std()) 
+
+                for col in cols:
+                    scaler[col] = {'mean': global_mean, 'std': global_std if global_std > 1e-8 else 1.0}
+
+            else:
+                # Per-column scaler: compute mean/std for each target column independently
+                for col in cols:
+                    mean = float(df[col].mean())
+                    std  = float(df[col].std())
+                    scaler[col] = {'mean': mean, 'std': std if std > 1e-8 else 1.0}
 
         dataset = []
         for _, row in df.iterrows():
@@ -412,13 +426,28 @@ class MultipoleDataGenerator:
                     f"Available: {[c for c in df.columns if c.startswith('target_')]}"
                 )
  
-        # --- Per-column scaler (train set only) ---
+        # --- Per-column or Isotropic scaler (one scaler on the whole space) ---
         if scaler is None:
             scaler = {}
-            for col in cols:
-                mean = float(df[col].mean())
-                std  = float(df[col].std())
-                scaler[col] = {'mean': mean, 'std': std if std > 1e-8 else 1.0}
+
+            # Check if the vector has 3 components named target_Ex, target_Ey, target_Ez
+            is_vector_3d = len(cols) == 3 
+
+            if is_vector_3d:
+            # Isotropic scaler: compute mean/std of the vector magnitude across the dataset
+                all_values = df[cols].values
+                global_mean = float(np.linalg.norm(all_values, axis=1).mean())
+                global_std  = float(np.linalg.norm(all_values, axis=1).std()) 
+
+                for col in cols:
+                    scaler[col] = {'mean': global_mean, 'std': global_std if global_std > 1e-8 else 1.0}
+
+            else:
+                # Per-column scaler: compute mean/std for each target column independently
+                for col in cols:
+                    mean = float(df[col].mean())
+                    std  = float(df[col].std())
+                    scaler[col] = {'mean': mean, 'std': std if std > 1e-8 else 1.0}
  
         dataset = []
         for _, row in df.iterrows():

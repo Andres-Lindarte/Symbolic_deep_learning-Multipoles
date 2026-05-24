@@ -96,8 +96,12 @@ def train_model(MODE: str = 'efield_vector'):
     df_train = df.iloc[:split].reset_index(drop=True)
     df_val   = df.iloc[split:].reset_index(drop=True)
 
-    train_dataset, scaler = generator.df_to_pytorch_geometric(df_train, scaler=None,   target_col=TARGET_COL)
-    val_dataset,   _      = generator.df_to_pytorch_geometric(df_val,   scaler=scaler, target_col=TARGET_COL)
+    if 'dipole' in MODE:
+        train_dataset, scaler = generator.dipole_df_to_pytorch_geometric(df_train, scaler=None,   target_col=TARGET_COL)
+        val_dataset,   _      = generator.dipole_df_to_pytorch_geometric(df_val,   scaler=scaler, target_col=TARGET_COL)
+    else:
+        train_dataset, scaler = generator.df_to_pytorch_geometric(df_train, scaler=None,   target_col=TARGET_COL)
+        val_dataset,   _      = generator.df_to_pytorch_geometric(df_val,   scaler=scaler, target_col=TARGET_COL)
 
     print(f"Train: {len(train_dataset)} graphs | Val: {len(val_dataset)} graphs")
     if OUTPUT_DIM == 1:
@@ -116,7 +120,7 @@ def train_model(MODE: str = 'efield_vector'):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model  = MultipoleGNN(node_features=5, hidden_dim=HIDDEN_DIM, output_dim=OUTPUT_DIM).to(device)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
-    criterion = nn.MSELoss()
+    criterion = nn.HuberLoss(delta=1.0)  # HuberLoss is more robust to outliers than MSE
 
     print(f"Training on : {device}")
     print(f"Output dim  : {OUTPUT_DIM}  {'(vector Ex,Ey,Ez)' if OUTPUT_DIM == 3 else '(scalar)'}")
@@ -157,9 +161,9 @@ def train_model(MODE: str = 'efield_vector'):
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item() * batch.num_graphs
-            history_train_loss.append(loss.item())
 
         avg_train_loss = total_train_loss / len(train_dataset)
+        history_train_loss.append(avg_train_loss)
 
         # --- Validate ---
         model.eval()
@@ -174,9 +178,9 @@ def train_model(MODE: str = 'efield_vector'):
                 target   = batch.y.view(-1, OUTPUT_DIM)
                 loss     = criterion(pred, target)
                 total_val_loss += loss.item() * batch.num_graphs
-                history_val_loss.append(loss.item())
 
         avg_val_loss = total_val_loss / len(val_dataset)
+        history_val_loss.append(avg_val_loss)
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -228,7 +232,7 @@ if __name__ == "__main__":
         '--mode',
         type=str,
         default='efield_vector',
-        choices=['potential', 'efield_mag', 'efield_vector'],
+        choices=['potential', 'efield_vector', 'dipole_potential', 'dipole_efield' ],
         help="What the GNN should learn: 'potential' for V=k·q/r, 'efield_mag' for |E|=k·q/r², or 'efield_vector' for E=(Ex,Ey,Ez)."
     )
     args = parser.parse_args()

@@ -410,17 +410,17 @@ def main():
         dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
 
     elif mode == "dipole_potential":
-        df         = generator.generate_dipole_potential()
+        df         = generator.generate_dipole()
         target_col = "target_V"
         dataset, _ = generator.dipole_df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
 
-    elif mode == "dipole_vector":
-        df         = generator.generate_dipole()
+    elif mode == "dipole_efield":
+        df         = generator.generate_dipole_efield()
         target_col = ["target_Ex", "target_Ey", "target_Ez"]
-        dataset, _ = generator.df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
+        dataset, _ = generator.dipole_df_to_pytorch_geometric(df, scaler=scaler, target_col=target_col)
 
     else:
-        raise ValueError(f"Unknown mode: {mode} in checkpoint. Expected 'potential', 'efield_vector','dipole_potential' or 'dipole_vector'.")
+        raise ValueError(f"Unknown mode: {mode} in checkpoint. Expected 'potential', 'efield_vector','dipole_potential' or 'dipole_efield'.")
 
     loader     = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 

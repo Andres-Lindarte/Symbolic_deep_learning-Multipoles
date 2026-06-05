@@ -1,0 +1,94 @@
+BARRIDO DE RESULTADOS 
+========================================
+Modo
+    * Distancia (space_size)
+        - Corta: 1.0
+        - Media: 10.0
+        - Larga: 100.0
+========================================
+
+---     Potencial Monopolo      ---
+    Corta:  - \frac{\left(0.12391671 obs_{r} + 0.39124689\right) \left(obs_{r} + src_{q} - 0.7958543\right)}{obs_{r}}
+        Run ID: 2026-06-04_19-01-40 / 2026-06-04_19-04-10
+        Loss GNN: 0.000305
+        R²: 0.980773
+        MSE: 0.310654
+    Media:  \frac{- 3.8622813 src_{q} + \left(- 0.033681978 obs_{x} - 0.19514295\right) \left(0.016379638 src_{q} + \sqrt{src_{r}}\right)}{0.016379638 src_{q} + \sqrt{src_{r}}}
+        Run ID: 2026-06-04_19-14-25 / 2026-06-04_19-16-00
+        Loss GNN: 0.007395
+        R²: 0.997472
+        MSE: 0.079866
+    Larga:  src_{q} \left(\left(0.4730466 src_{q} - 0.35657144\right)^{2} - 16.025738\right) - 3.3173203
+        Run ID: 2026-06-04_19-29-42 / 2026-06-04_19-30-59
+        Loss GNN: 0.002566
+        R²: 0.995788
+        MSE: 0.077515
+
+---     Campo Monopolo      ---
+    Corta:  
+            Ex: 0.010220333 \delta_{x} src_{q} - 0.0402084 \delta_{y} - 0.06810146 \delta_{z} - 0.14110193
+            Ey: 0.060677934 \delta_{z} + 0.5753792 obs_{r}
+            Ez: 0.005474613 \delta_{z} \left(\delta_{x} - 4.0161805\right) - 0.18858403 src_{r}
+        Run ID: 2026-06-04_19-37-40 / 026-06-04_19-38-17
+        Loss GNN: 0.010795
+        R²: 0.656381 - 0.934505 - 0.865569
+        MSE: 2.613273 - 3.980944 - 2.102531
+    Media:
+            Ex: 0.032288644 \delta_{y} src_{q} - 0.21541052 obs_{r}
+            Ey: \frac{1.2479541 obs_{r} - 0.22517204 src_{q} \left(\delta_{y} + \delta_{z}\right) - 3.30300204414772}{obs_{r}}
+            Ez: \frac{src_{q} \left(\delta_{x} - \delta_{z}\right)}{obs_{r}^{2}}
+        Run ID: 2026-06-04_19-49-09 / 2026-06-04_19-50-56
+        Loss GNN: 0.003896
+        R²: 0.559356 - 0.712600 - 0.605045
+        MSE: 0.166718 - 0.122148 - 0.118820
+    Larga:
+            Ex: src_{q} + 0.5778791 src_{r} - \sqrt{\left(\delta_{y} - 2.90743956799635 src_{q}\right)^{2}}
+            Ey: 0.19662516 src_{q} \left(- \delta_{x} + \delta_{z} + 6.9002457\right) + 1.8838702
+            Ez: - 0.36163527 \left(0.19192092 \delta_{y} + 0.19192092 \delta_{z} + src_{q}\right)^{2}
+        Run ID: 2026-06-04_20-01-37 / 2026-06-04_20-02-54
+        Loss GNN: 0.025039  
+        R²: 0.868500 - 0.820787 - 0.685935
+        MSE: 0.002810 - 0.003056 - 0.003217
+
+---     Potencial Dipolo      ---
+    Corta:  \frac{\left(0.041514106 obs_{x} - src_{q}\right) \left(0.59085643 src_{r} - 0.3185014\right)}{src_{r}}
+        Run ID: 2026-06-04_20-38-30 / 2026-06-04_20-41-26
+        Loss GNN: 0.003186
+        R²: 0.997639
+        MSE: 0.155942
+    Media:  
+        Run ID: 2026-06-04_21-11-02
+        Loss GNN: 0.070261
+        R²: 
+        MSE: 
+    Larga:
+        Run ID:
+        Loss GNN:
+        R²: 
+        MSE:
+        
+---     Campo Dipolo      ---
+    Corta:
+            Ex: 
+            Ey: 
+            Ez: 
+        Run ID:
+        Loss GNN:
+        R²: 
+        MSE:
+    Media:
+            Ex: 
+            Ey: 
+            Ez: 
+        Run ID:
+        Loss GNN:
+        R²: 
+        MSE:
+    Larga:
+            Ex: 
+            Ey: 
+            Ez: 
+        Run ID:
+        Loss GNN:
+        R²: 
+        MSE:

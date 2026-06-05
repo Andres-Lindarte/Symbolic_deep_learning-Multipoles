@@ -2,6 +2,9 @@
 Usage 
 -----
      Python train.py --mode <potential|efield_vector|dipole_potential|dipole_efield>
+                     --epochs 200 --batch_size 32 --learning_rate 1e-3 --hidden_dim 32
+                     --num_samples 10000 --space_size 10.0 --train_ratio 0.8
+
 """
 
 import matplotlib.pyplot as plt
@@ -42,17 +45,14 @@ def plot_loss_curves(train_losses, val_losses, mode, run_id, save_dir="outputs/p
     
     print(f"Loss curve saved on → {save_path}")
 
-def train_model(MODE: str = 'efield_vector'):
-    # ------------------------------------------------------------------ #
-    # 1. Hyperparameters                                                   #
-    # ------------------------------------------------------------------ #
-    EPOCHS        = 200 
-    BATCH_SIZE    = 32
-    LEARNING_RATE = 1e-3
-    HIDDEN_DIM    = 32
-    NUM_SAMPLES   = 10_000 
-    SPACE_SIZE    = 10.0
-    TRAIN_RATIO   = 0.8
+def train_model(MODE: str = 'efield_vector',     
+                EPOCHS        = 200,
+                BATCH_SIZE    = 32,
+                LEARNING_RATE = 1e-3,
+                HIDDEN_DIM    = 32,
+                NUM_SAMPLES   = 10_000,
+                SPACE_SIZE    = 10.0,
+                TRAIN_RATIO   = 0.8):
 
     # MODE controls what the GNN learns:
     #   'potential'    → V = k·q/r          scalar, output_dim=1,   2 nodes (q and observer)
@@ -235,6 +235,14 @@ if __name__ == "__main__":
         choices=['potential', 'efield_vector', 'dipole_potential', 'dipole_efield' ],
         help="What the GNN should learn: 'potential' for V=k·q/r, 'efield_mag' for |E|=k·q/r², or 'efield_vector' for E=(Ex,Ey,Ez)."
     )
+    parser.add_argument('--epochs', type=int, default=200, help="Number of training epochs.")
+    parser.add_argument('--batch_size', type=int, default=32, help="Training batch size.")
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help="Learning rate for the optimizer.")
+    parser.add_argument('--hidden_dim', type=int, default=32, help="Hidden dimension size for the GNN.")
+    parser.add_argument('--num_samples', type=int, default=10_000, help="Total number of samples to generate for training and validation.")
+    parser.add_argument('--space_size', type=float, default=10.0, help="Size of the 3D space in which charges and observers are placed.")
+    parser.add_argument('--train_ratio', type=float, default=0.8, help="Ratio of training samples vs validation samples.")  
     args = parser.parse_args()
-    trained_model, dataloader, scaler, mode = train_model(args.mode)
+
+    trained_model, dataloader, scaler, mode = train_model(MODE=args.mode, EPOCHS=args.epochs, BATCH_SIZE=args.batch_size, LEARNING_RATE=args.learning_rate, HIDDEN_DIM=args.hidden_dim, NUM_SAMPLES=args.num_samples, SPACE_SIZE=args.space_size, TRAIN_RATIO=args.train_ratio)
     print(f"\nNext step: python pysr_analysis.py --checkpoint <outputs/checkpoints/saved .pth file>")

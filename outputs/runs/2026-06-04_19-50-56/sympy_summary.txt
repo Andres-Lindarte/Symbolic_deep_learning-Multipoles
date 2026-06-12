@@ -1,0 +1,33 @@
+Run ID : outputs/runs/2026-06-04_19-50-56
+Mode   : efield_vector
+
+[Ex]
+  PySR      : -(-0.032288644)*delta_y*src_q + obs_r*(-0.21541052)
+  Simplified: 0.032288644*delta_y*src_q - 0.21541052*obs_r
+  LaTeX     : 0.032288644 \delta_{y} src_{q} - 0.21541052 obs_{r}
+  Known     : delta_x*src_q/src_r**3
+  Ratio     : src_r**3*(0.032288644*delta_y*src_q - 0.21541052*obs_r)/(delta_x*src_q)
+  R²   : 0.559356
+  RMSE : 0.166718
+
+[Ey]
+  PySR      : 1.2479541 + (src_q*(delta_y + delta_z) + 14.668793)*(-0.22517204)/obs_r
+  Simplified: (1.2479541*obs_r - 0.22517204*src_q*(delta_y + delta_z) - 3.30300204414772)/obs_r
+  LaTeX     : \frac{1.2479541 obs_{r} - 0.22517204 src_{q} \left(\delta_{y} + \delta_{z}\right) - 3.30300204414772}{obs_{r}}
+  Known     : delta_y*src_q/src_r**3
+  Ratio     : src_r**3*(1.2479541*obs_r - 0.22517204*src_q*(delta_y + delta_z) - 3.30300204414772)/(delta_y*obs_r*src_q)
+  R²   : 0.712600
+  RMSE : 0.122148
+
+[Ez]
+  PySR      : src_q*(delta_x - delta_z)/(obs_r**2)
+  Simplified: src_q*(delta_x - delta_z)/obs_r**2
+  LaTeX     : \frac{src_{q} \left(\delta_{x} - \delta_{z}\right)}{obs_{r}^{2}}
+  Known     : delta_z*src_q/src_r**3
+  Ratio     : src_r**3*(delta_x - delta_z)/(delta_z*obs_r**2)
+  R²   : 0.605045
+  RMSE : 0.118820
+
+
+[Symmetry check]
+  NOT symmetric — components differ (try more epochs or iterations)

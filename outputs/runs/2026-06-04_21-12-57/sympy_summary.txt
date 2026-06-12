@@ -1,0 +1,9 @@
+Run ID : outputs/runs/2026-06-04_21-12-57
+Mode   : dipole_potential
+
+[scalar]
+  PySR      : src_q*(src_r - 1*5.940047)/(src_r + 0.5190574) - 0.8319075
+  Simplified: (src_q*(src_r - 5.940047) - 0.8319075*src_r - 0.4318077439905)/(src_r + 0.5190574)
+  LaTeX     : \frac{src_{q} \left(src_{r} - 5.940047\right) - 0.8319075 src_{r} - 0.4318077439905}{src_{r} + 0.5190574}
+  R²   : 0.675635
+  RMSE : 0.102273

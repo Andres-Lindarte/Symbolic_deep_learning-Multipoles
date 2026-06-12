@@ -1,0 +1,9 @@
+Run ID : outputs/runs/2026-06-04_19-04-10
+Mode   : potential
+
+[scalar]
+  PySR      : (-0.12391671 - 0.39124689/obs_r)*(obs_r + src_q - 0.7958543)
+  Simplified: -(0.12391671*obs_r + 0.39124689)*(obs_r + src_q - 0.7958543)/obs_r
+  LaTeX     : - \frac{\left(0.12391671 obs_{r} + 0.39124689\right) \left(obs_{r} + src_{q} - 0.7958543\right)}{obs_{r}}
+  R²   : 0.980773
+  RMSE : 0.310654

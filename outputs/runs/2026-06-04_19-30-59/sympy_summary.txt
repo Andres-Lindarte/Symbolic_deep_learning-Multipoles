@@ -1,0 +1,9 @@
+Run ID : outputs/runs/2026-06-04_19-30-59
+Mode   : potential
+
+[scalar]
+  PySR      : src_q*((0.35657144 - 0.4730466*src_q)**2 - 1*16.025738) - 3.3173203
+  Simplified: src_q*((0.4730466*src_q - 0.35657144)**2 - 16.025738) - 3.3173203
+  LaTeX     : src_{q} \left(\left(0.4730466 src_{q} - 0.35657144\right)^{2} - 16.025738\right) - 3.3173203
+  R²   : 0.995788
+  RMSE : 0.077515

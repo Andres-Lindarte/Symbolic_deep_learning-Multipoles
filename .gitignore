@@ -11,7 +11,7 @@ venv/
 .env/
 
 # Outputs
-outputs/
+# outputs/
 pysr_results/
 
 # Model
